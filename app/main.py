@@ -16,10 +16,10 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Enable CORS for the local React development server
+# Enable CORS for all origins since we don't know the Vercel URL yet
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"], # Vite default ports
+    allow_origins=["*"], 
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
