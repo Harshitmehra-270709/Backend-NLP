@@ -36,7 +36,8 @@ function App() {
     setResult(null);
 
     try {
-      const response = await fetch('http://localhost:8000/api/v1/parse-command', {
+      const apiUrl = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+      const response = await fetch(`${apiUrl}/api/v1/parse-command`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
