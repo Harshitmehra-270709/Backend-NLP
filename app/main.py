@@ -1,83 +1,148 @@
-import os
-from fastapi import FastAPI, HTTPException, Depends, Header
+from __future__ import annotations
+
+from contextlib import asynccontextmanager
+
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from dotenv import load_dotenv
 
-# Load environment variables from .env file (for local development)
-load_dotenv()
-
-from app.models import CommandRequest, CommandResponse
-from app.ai_service import parse_instruction_to_command
-from app.security_policy import validate_command_safety
-
-app = FastAPI(
-    title="AI Command Parser API",
-    description="An API to convert natural language instructions into structured backend commands securely.",
-    version="1.0.0"
+from .auth import build_auth_dependency
+from .command_service import CommandService
+from .config import AppSettings
+from .execution_engine import ExecutionEngine
+from .models import (
+    ApprovalActionRequest,
+    AuthenticatedUser,
+    CommandListResponse,
+    CommandRequest,
+    CommandResponse,
+    MetricsResponse,
 )
+from .rate_limit import RateLimiter
+from .storage import CommandRepository
 
-# Enable CORS for all origins since we don't know the Vercel URL yet
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"], 
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
-# Very basic security mechanism (simulating an API key for actual endpoint use)
-# In production, this would use OAuth2, JWTs, or robust API Gateway features.
-def verify_api_key(x_api_key: str = Header(None)):
-    expected_key = os.getenv("APP_SECRET_KEY", "dev-secret-key-123")
-    if x_api_key != expected_key:
-        raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key header")
-    return x_api_key
+def create_app(settings: AppSettings | None = None) -> FastAPI:
+    active_settings = settings or AppSettings.from_env()
+    repository = CommandRepository(active_settings.command_db_path)
+    rate_limiter = RateLimiter(
+        max_requests=active_settings.request_rate_limit,
+        window_seconds=active_settings.rate_limit_window_seconds,
+    )
+    execution_engine = ExecutionEngine(repository, active_settings)
+    command_service = CommandService(repository, execution_engine, active_settings)
+    get_current_user = build_auth_dependency(active_settings)
 
-@app.post("/api/v1/parse-command", response_model=CommandResponse)
-async def parse_command(request: CommandRequest, api_key: str = Depends(verify_api_key)):
-    """
-    Takes a natural language instruction, converts it via AI to a structured command,
-    and applies security validations before returning it to the caller.
-    """
-    if not request.instruction.strip():
-        raise HTTPException(status_code=400, detail="Instruction cannot be empty.")
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        repository.initialize()
+        yield
 
-    try:
-        # Step 1: Pass to AI layer
-        parsed_command = parse_instruction_to_command(request.instruction)
-        
-        # Step 2: Handle ambiguity
-        if parsed_command.needs_clarification:
+    app = FastAPI(
+        title=active_settings.app_name,
+        version=active_settings.app_version,
+        description="Guardrailed natural-language command center with persistence, approvals, and mock execution.",
+        lifespan=lifespan,
+    )
+    app.state.settings = active_settings
+    app.state.repository = repository
+    app.state.command_service = command_service
+    app.state.rate_limiter = rate_limiter
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=active_settings.allowed_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    def get_repository(request: Request) -> CommandRepository:
+        return request.app.state.repository
+
+    def get_command_service(request: Request) -> CommandService:
+        return request.app.state.command_service
+
+    def enforce_rate_limit(request: Request, user: AuthenticatedUser = Depends(get_current_user)) -> AuthenticatedUser:
+        client_host = request.client.host if request.client else "unknown"
+        rate_key = f"{user.user_id}:{client_host}"
+        request.app.state.rate_limiter.enforce(rate_key)
+        return user
+
+    @app.get("/health")
+    async def health_check() -> dict[str, str]:
+        return {"status": "ok"}
+
+    @app.post("/api/v1/parse-command", response_model=CommandResponse)
+    async def parse_command(
+        request_body: CommandRequest,
+        background_tasks: BackgroundTasks,
+        user: AuthenticatedUser = Depends(enforce_rate_limit),
+        service: CommandService = Depends(get_command_service),
+    ) -> CommandResponse:
+        return service.submit_command(request_body, user, background_tasks)
+
+    @app.get("/api/v1/commands", response_model=CommandListResponse)
+    async def list_commands(
+        limit: int = 25,
+        _: AuthenticatedUser = Depends(get_current_user),
+        repository: CommandRepository = Depends(get_repository),
+    ) -> CommandListResponse:
+        return CommandListResponse(commands=repository.list_commands(limit=limit))
+
+    @app.get("/api/v1/commands/{command_id}", response_model=CommandResponse)
+    async def get_command(
+        command_id: str,
+        _: AuthenticatedUser = Depends(get_current_user),
+        repository: CommandRepository = Depends(get_repository),
+    ) -> CommandResponse:
+        try:
+            return CommandResponse(success=True, data=repository.get_command(command_id))
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/api/v1/metrics", response_model=MetricsResponse)
+    async def get_metrics(
+        _: AuthenticatedUser = Depends(get_current_user),
+        repository: CommandRepository = Depends(get_repository),
+    ) -> MetricsResponse:
+        return MetricsResponse(**repository.get_metrics())
+
+    @app.post("/api/v1/commands/{command_id}/approve", response_model=CommandResponse)
+    async def approve_command(
+        command_id: str,
+        request_body: ApprovalActionRequest,
+        background_tasks: BackgroundTasks,
+        user: AuthenticatedUser = Depends(get_current_user),
+        service: CommandService = Depends(get_command_service),
+    ) -> CommandResponse:
+        try:
             return CommandResponse(
-                success=False,
-                error=parsed_command.clarification_message,
-                data=parsed_command
+                success=True,
+                data=service.approve_command(command_id, user, background_tasks, request_body.note),
             )
-            
-        # Step 3: Run security & safety policies
-        is_safe, reason = validate_command_safety(parsed_command.op, parsed_command.is_safe)
-        
-        if not is_safe:
-            return CommandResponse(
-                success=False,
-                error=f"Security Policy Blocked Request: {reason}",
-                data=parsed_command
-            )
-            
-        # Step 4: All checks passed - ready to execute
-        # (In a real system, we might push this to a Redis queue or an execution engine here)
-        return CommandResponse(
-            success=True,
-            data=parsed_command
-        )
-        
-    except Exception as e:
-        # Log unexpected errors here out of band
-        import traceback
-        trace = traceback.format_exc()
-        raise HTTPException(status_code=500, detail=f"{str(e)}\n\n{trace}")
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-@app.get("/health")
-async def health_check():
-    """Simple status check."""
-    return {"status": "ok"}
+    @app.post("/api/v1/commands/{command_id}/reject", response_model=CommandResponse)
+    async def reject_command(
+        command_id: str,
+        request_body: ApprovalActionRequest,
+        user: AuthenticatedUser = Depends(get_current_user),
+        service: CommandService = Depends(get_command_service),
+    ) -> CommandResponse:
+        try:
+            return CommandResponse(
+                success=True,
+                data=service.reject_command(command_id, user, request_body.note),
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return app
+
+
+app = create_app()

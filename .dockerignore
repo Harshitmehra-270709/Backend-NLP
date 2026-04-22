@@ -1,13 +1,8 @@
-.env
 __pycache__/
 *.pyc
 .pytest_cache/
-.tmp/
-.venv/
-*.log
-node_modules/
+.git/
+.env
 frontend/node_modules/
 frontend/dist/
 data/
-*.db
-.DS_Store

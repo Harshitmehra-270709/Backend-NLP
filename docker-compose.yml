@@ -1,0 +1,21 @@
+services:
+  backend:
+    build:
+      context: .
+    environment:
+      APP_SECRET_KEY: dev-secret-key-123
+      PARSER_MODE: mock
+      ALLOWED_ORIGINS: http://localhost:5173
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build:
+      context: ./frontend
+    environment:
+      VITE_API_URL: http://localhost:8000
+      VITE_APP_API_KEY: dev-secret-key-123
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
