@@ -536,7 +536,7 @@ function App() {
 
           <div className="history-list">
             {dashboardLoading ? (
-              <div className="empty-state">Loading requests...</div>
+              <ServerStartingIndicator />
             ) : filteredCommands.length === 0 ? (
               <div className="empty-state">No requests match the current filters.</div>
             ) : (
@@ -792,6 +792,31 @@ function getWorkflowStage(status = '') {
     return 4
   }
   return 0
+}
+
+function ServerStartingIndicator() {
+  const [elapsed, setElapsed] = useState(0)
+
+  useEffect(() => {
+    const start = Date.now()
+    const timer = setInterval(() => {
+      setElapsed(Math.floor((Date.now() - start) / 1000))
+    }, 1000)
+    return () => clearInterval(timer)
+  }, [])
+
+  return (
+    <div className="empty-state server-starting">
+      <div className="spinner"></div>
+      <p style={{ margin: '12px 0 4px', fontWeight: 600 }}>Connecting to backend...</p>
+      {elapsed >= 2 && (
+        <p className="subtle-copy" style={{ margin: 0, fontSize: '0.9rem', lineHeight: 1.5 }}>
+          Render free tier spins down after inactivity.<br/>
+          Elapsed time: <strong>{elapsed}s</strong> (may take up to 50s to wake up)
+        </p>
+      )}
+    </div>
+  )
 }
 
 export default App
