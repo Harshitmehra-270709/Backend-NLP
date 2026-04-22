@@ -22,6 +22,11 @@ jobs:
 
       - name: Run backend tests
         run: pytest
+        env:
+          PYTHONPATH: .
+          APP_SECRET_KEY: test-secret
+          PARSER_MODE: mock
+          COMMAND_DB_PATH: /tmp/test_commands.db
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
