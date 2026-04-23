@@ -14,16 +14,37 @@ from .models import CommandSchema, RiskLevel
 logger = logging.getLogger(__name__)
 
 
-SYSTEM_PROMPT = """
-You convert natural language operational requests into a strict JSON command schema.
+SYSTEM_PROMPT = """\
+You convert natural language operational requests into a strict JSON command object.
 
 Rules:
-1. Return only JSON that matches the supplied schema.
+1. Return ONLY a single JSON object — no markdown fences, no extra text.
 2. Use namespaced operations such as service.restart or database.backup.
-3. Mark destructive actions as unsafe.
+3. Mark destructive actions as unsafe (is_safe = false).
 4. Ask for clarification if the request is too ambiguous to execute safely.
 5. Set approval_required to true for risky production actions.
 6. Fill intent_label, matched_terms, and explanation_steps so operators can understand why the command was created.
+
+The JSON must have exactly these keys:
+{
+  "op": "<string: structured operation name, e.g. service.restart>",
+  "summary": "<string: human-readable summary>",
+  "actions": ["<string: fine-grained execution steps>"],
+  "parameters": {"<string>": "<any>"},
+  "target_service": "<string: affected service name>",
+  "environment": "<string: dev|staging|production>",
+  "confidence": "<float: 0.0 to 1.0>",
+  "risk_level": "<string: low|medium|high|critical>",
+  "is_safe": "<boolean>",
+  "approval_required": "<boolean>",
+  "needs_clarification": "<boolean>",
+  "clarification_message": "<string: question if clarification is needed, else empty>",
+  "execution_notes": "<string: notes for operators>",
+  "parser_source": "gemini",
+  "intent_label": "<string: short label for the matched workflow>",
+  "matched_terms": ["<string: keywords that helped determine intent>"],
+  "explanation_steps": ["<string: human-readable reasoning steps>"]
+}
 """
 
 
@@ -64,7 +85,6 @@ def _gemini_parse(api_key: str, instruction: str, environment: str) -> CommandSc
         config=types.GenerateContentConfig(
             system_instruction=SYSTEM_PROMPT,
             response_mime_type="application/json",
-            response_schema=CommandSchema,
             temperature=0.0,
         ),
     )
