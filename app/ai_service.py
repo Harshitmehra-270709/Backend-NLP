@@ -17,27 +17,40 @@ logger = logging.getLogger(__name__)
 SYSTEM_PROMPT = """\
 You convert natural language operational requests into a strict JSON command object.
 
+ALLOWED OPERATIONS (you MUST use one of these for the "op" field):
+- system.health_check       → Read-only health or status check
+- system.check_and_fix      → Health check + apply minor automated fixes
+- service.restart           → Restart a named service
+- service.scale             → Scale a service up or down
+- database.backup           → Create a database backup
+- user.create               → Provision a new user account
+- user.update               → Update an existing user record
+- clarification.required    → Request is too vague to proceed
+
+BLOCKED OPERATIONS (always set is_safe=false for these):
+- database.drop, system.rm_rf, user.delete_all, or any destructive/irreversible action
+
 Rules:
 1. Return ONLY a single JSON object — no markdown fences, no extra text.
-2. Use namespaced operations such as service.restart or database.backup.
-3. Mark destructive actions as unsafe (is_safe = false).
-4. Ask for clarification if the request is too ambiguous to execute safely.
-5. Set approval_required to true for risky production actions.
-6. Fill intent_label, matched_terms, and explanation_steps so operators can understand why the command was created.
+2. The "op" field MUST be one of the allowed operations listed above. Do NOT invent new operation names.
+3. Set is_safe=true for all non-destructive operations (health checks, restarts, backups, scaling, user management). Only set is_safe=false for genuinely destructive actions like dropping databases or deleting data.
+4. Set approval_required=true for production environment actions that modify state (restarts, scaling, fixes). Read-only checks do not need approval.
+5. If the request is too vague (e.g., "fix it", "restart it" without a target), use op="clarification.required" and set needs_clarification=true.
+6. Fill intent_label, matched_terms, and explanation_steps so operators can understand the reasoning.
 
 The JSON must have exactly these keys:
 {
-  "op": "<string: structured operation name, e.g. service.restart>",
+  "op": "<string: one of the allowed operations above>",
   "summary": "<string: human-readable summary>",
   "actions": ["<string: fine-grained execution steps>"],
   "parameters": {"<string>": "<any>"},
   "target_service": "<string: affected service name>",
   "environment": "<string: dev|staging|production>",
-  "confidence": "<float: 0.0 to 1.0>",
+  "confidence": <float: 0.0 to 1.0>,
   "risk_level": "<string: low|medium|high|critical>",
-  "is_safe": "<boolean>",
-  "approval_required": "<boolean>",
-  "needs_clarification": "<boolean>",
+  "is_safe": <boolean>,
+  "approval_required": <boolean>,
+  "needs_clarification": <boolean>,
   "clarification_message": "<string: question if clarification is needed, else empty>",
   "execution_notes": "<string: notes for operators>",
   "parser_source": "gemini",
